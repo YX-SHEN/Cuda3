@@ -1,0 +1,8 @@
+#ifndef RADIATOR_CPU_H
+#define RADIATOR_CPU_H
+
+void initialize_matrices(float* A, float* B, int n, int m);
+void propagate_heat(const float* previous, float* next, int n, int m);
+void calculate_row_averages(const float* matrix, float* averages, int n, int m);
+
+#endif
