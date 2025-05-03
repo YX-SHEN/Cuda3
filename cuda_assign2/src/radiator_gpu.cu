@@ -14,19 +14,16 @@ __global__ void propagate_kernel(const float* in, float* out, int n, int m) {
     int row = blockIdx.y * blockDim.y + ty;
 
     int local_row = ty;
-    int local_col = tx + 2;  // shared memory中偏移+2
+    int local_col = tx + 2;
 
-    // 每个线程拷贝本地数据到tile
     if (row < n && col < m)
         tile[local_row * (blockDim.x + 4) + local_col] = in[row * m + col];
 
-    // HALO 左边界
     if (tx < 2 && row < n) {
         int halo_col = (col - 2 + m) % m;
         tile[local_row * (blockDim.x + 4) + tx] = in[row * m + halo_col];
     }
 
-    // HALO 右边界
     if (tx >= blockDim.x - 2 && row < n) {
         int halo_col = (col + (tx - (blockDim.x - 2)) + 1) % m;
         tile[local_row * (blockDim.x + 4) + local_col + (tx - (blockDim.x - 2)) + 1] =
@@ -51,22 +48,23 @@ __global__ void propagate_kernel(const float* in, float* out, int n, int m) {
     out[row * m + col] = sum / 5.0f;
 }
 
-// ---------------- Row Average Kernel ----------------
+// ---------------- Optimized Row Average Kernel ----------------
 __global__ void average_kernel(const float* matrix, float* averages, int n, int m) {
     extern __shared__ float sdata[];
     int row = blockIdx.x;
     int tid = threadIdx.x;
-    int stride = blockDim.x;
 
-    float sum = 0.0f;
-    for (int j = tid; j < m; j += stride) {
-        sum += matrix[row * m + j];
+    float local_sum = 0.0f;
+    for (int i = tid; i < m; i += blockDim.x) {
+        local_sum += matrix[row * m + i];
     }
-    sdata[tid] = sum;
-
+    sdata[tid] = local_sum;
     __syncthreads();
+
     for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (tid < s) sdata[tid] += sdata[tid + s];
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+        }
         __syncthreads();
     }
 
@@ -75,19 +73,18 @@ __global__ void average_kernel(const float* matrix, float* averages, int n, int 
     }
 }
 
-// ---------------- GPU API ----------------
-extern "C"
+// ==================== GPU API - C Linkage ====================
+extern "C" {
+
 void gpu_propagate(float* d_in, float* d_out, int n, int m,
                    int block_x, int block_y, cudaStream_t stream) {
     dim3 threads(block_x, block_y);
     dim3 blocks((m + block_x - 1) / block_x, (n + block_y - 1) / block_y);
-
     size_t shared_mem = (block_x + 4) * block_y * sizeof(float);
     propagate_kernel<<<blocks, threads, shared_mem, stream>>>(d_in, d_out, n, m);
     CHECK_CUDA(cudaGetLastError());
 }
 
-extern "C"
 void gpu_calculate_averages(float* d_matrix, float* d_avg, int n, int m,
                             int block_size, cudaStream_t stream) {
     dim3 blocks(n);
@@ -97,31 +94,37 @@ void gpu_calculate_averages(float* d_matrix, float* d_avg, int n, int m,
     CHECK_CUDA(cudaGetLastError());
 }
 
-// ---------------- Memory Management ----------------
-extern "C"
 void gpu_alloc_memory(float** d_in, float** d_out, int n, int m) {
     size_t bytes = n * m * sizeof(float);
     CHECK_CUDA(cudaMalloc(d_in, bytes));
     CHECK_CUDA(cudaMalloc(d_out, bytes));
 }
 
-extern "C"
 void gpu_free_memory(float* d_in, float* d_out) {
     if (d_in) cudaFree(d_in);
     if (d_out) cudaFree(d_out);
 }
 
-extern "C"
 void gpu_alloc_averages(float** d_avg, int n) {
     CHECK_CUDA(cudaMalloc(d_avg, n * sizeof(float)));
 }
 
-extern "C"
 void gpu_free_averages(float* d_avg) {
     if (d_avg) cudaFree(d_avg);
 }
 
-extern "C"
+void copy_to_device(float* d_in, const float* h_in, int n, int m) {
+    CHECK_CUDA(cudaMemcpy(d_in, h_in, n * m * sizeof(float), cudaMemcpyHostToDevice));
+}
+
+void copy_from_device(float* h_out, const float* d_out, int n, int m) {
+    CHECK_CUDA(cudaMemcpy(h_out, d_out, n * m * sizeof(float), cudaMemcpyDeviceToHost));
+}
+
+void copy_averages_from_device(float* h_avg, const float* d_avg, int n) {
+    CHECK_CUDA(cudaMemcpy(h_avg, d_avg, n * sizeof(float), cudaMemcpyDeviceToHost));
+}
+
 void validate_block_size(int block_x, int block_y) {
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, 0);
@@ -139,24 +142,6 @@ void validate_block_size(int block_x, int block_y) {
     }
 }
 
-// ---------------- Memory Transfers ----------------
-extern "C"
-void copy_to_device(float* d_in, const float* h_in, int n, int m) {
-    CHECK_CUDA(cudaMemcpy(d_in, h_in, n * m * sizeof(float), cudaMemcpyHostToDevice));
-}
-
-extern "C"
-void copy_from_device(float* h_out, const float* d_out, int n, int m) {
-    CHECK_CUDA(cudaMemcpy(h_out, d_out, n * m * sizeof(float), cudaMemcpyDeviceToHost));
-}
-
-extern "C"
-void copy_averages_from_device(float* h_avg, const float* d_avg, int n) {
-    CHECK_CUDA(cudaMemcpy(h_avg, d_avg, n * sizeof(float), cudaMemcpyDeviceToHost));
-}
-
-// ---------------- Validation ----------------
-extern "C"
 void validate_results(const float* cpu_matrix, const float* gpu_matrix,
                       const float* cpu_avg, const float* gpu_avg,
                       int n, int m, bool has_avg) {
@@ -182,3 +167,5 @@ void validate_results(const float* cpu_matrix, const float* gpu_matrix,
                max_avg_diff, avg_mismatch);
     }
 }
+
+}  // end extern "C"
