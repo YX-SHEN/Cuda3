@@ -14,12 +14,12 @@ public:
     double elapsed() const {
         timeval end_time;
         gettimeofday(&end_time, NULL);
-        return (end_time.tv_sec - start_time.tv_sec) +
-               (end_time.tv_usec - start_time.tv_usec) * 1e-6;
+        return (end_time.tv_sec - start_time.tv_sec)
+             + (end_time.tv_usec - start_time.tv_usec) * 1e-6;
     }
 
 private:
     timeval start_time;
 };
 
-#endif
+#endif // TIMER_H
