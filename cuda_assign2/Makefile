@@ -1,32 +1,35 @@
-# Compiler settings
-NVCC       = nvcc
-NVCCFLAGS  = -O2 -std=c++17 -arch=sm_75 -Xcompiler="-fopenmp"
-INCLUDES   = -I./src
+# Makefile for CUDA + C++ heat radiator project
 
-# Source files
-SRC       = src/main.cpp src/radiator_cpu.cpp src/radiator_gpu.cu
-OBJ_DIR   = obj
-OBJS      = $(SRC:src/%.cpp=$(OBJ_DIR)/%.o)
-OBJS      := $(OBJS:src/%.cu=$(OBJ_DIR)/%.o)
+# 编译器设置
+CXX      := nvcc
+CXXFLAGS := -O2 -std=c++17 -Xcompiler="-fopenmp"
+INCLUDES := -I./src
+ARCH     := -arch=sm_75
 
-TARGET    = radiator_exec
+# 文件路径
+SRCDIR   := src
+OBJDIR   := obj
+TARGET   := radiator_exec
 
-# Default target
+# 源文件
+SRCS := $(wildcard $(SRCDIR)/*.cpp) $(wildcard $(SRCDIR)/*.cu)
+OBJS := $(patsubst $(SRCDIR)/%.cpp,$(OBJDIR)/%.o,$(filter %.cpp,$(SRCS))) \
+        $(patsubst $(SRCDIR)/%.cu,$(OBJDIR)/%.o,$(filter %.cu,$(SRCS)))
+
+# 默认目标
 all: $(TARGET)
 
-# Link target
+# 链接
 $(TARGET): $(OBJS)
-	$(NVCC) $(NVCCFLAGS) $(INCLUDES) -o $@ $^
+	$(CXX) $(CXXFLAGS) $(ARCH) $(INCLUDES) -o $@ $^
 
-# Compile all source files with nvcc
-$(OBJ_DIR)/%.o: src/%.cpp
-	@mkdir -p $(OBJ_DIR)
-	$(NVCC) $(NVCCFLAGS) $(INCLUDES) -c $< -o $@
+# 生成中间目标文件
+$(OBJDIR)/%.o: $(SRCDIR)/%.cpp
+	$(CXX) $(CXXFLAGS) $(ARCH) $(INCLUDES) -c $< -o $@
 
-$(OBJ_DIR)/%.o: src/%.cu
-	@mkdir -p $(OBJ_DIR)
-	$(NVCC) $(NVCCFLAGS) $(INCLUDES) -c $< -o $@
+$(OBJDIR)/%.o: $(SRCDIR)/%.cu
+	$(CXX) $(CXXFLAGS) $(ARCH) $(INCLUDES) -c $< -o $@
 
-# Clean target
+# 清理目标
 clean:
-	rm -rf $(OBJ_DIR) $(TARGET)
+	rm -f $(OBJDIR)/*.o $(TARGET)

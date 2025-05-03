@@ -1,37 +1,27 @@
-// src/radiator_gpu.h
 #ifndef RADIATOR_GPU_H
 #define RADIATOR_GPU_H
 
 #include <cuda_runtime.h>
 
-#ifdef __cplusplus
-extern "C" {
-#endif
+// GPU API
+extern "C" void validate_block_size(int block_x, int block_y);
+extern "C" void gpu_alloc_memory(float** d_in, float** d_out, int n, int m);
+extern "C" void gpu_free_memory(float* d_in, float* d_out);
+extern "C" void copy_to_device(float* d_in, const float* h_in, int n, int m);
+extern "C" void copy_from_device(float* h_out, const float* d_out, int n, int m);
 
-void gpu_propagate(float* d_in, float* d_out, int n, int m,
-                   int block_x, int block_y, cudaStream_t stream);
+extern "C" void gpu_propagate(float* d_in, float* d_out, int n, int m,
+                              int block_x, int block_y, cudaStream_t stream);
 
-void gpu_calculate_averages(float* d_matrix, float* d_avg, int n, int m,
-                            int block_size, cudaStream_t stream);
+extern "C" void gpu_calculate_averages(float* d_matrix, float* d_avg, int n, int m,
+                                       int block_size, cudaStream_t stream);
 
-void gpu_alloc_memory(float** d_in, float** d_out, int n, int m);
-void gpu_free_memory(float* d_in, float* d_out);
+extern "C" void gpu_alloc_averages(float** d_avg, int n);
+extern "C" void gpu_free_averages(float* d_avg);
+extern "C" void copy_averages_from_device(float* h_avg, const float* d_avg, int n);
 
-void gpu_alloc_averages(float** d_avg, int n);
-void gpu_free_averages(float* d_avg);
+extern "C" void validate_results(const float* cpu_matrix, const float* gpu_matrix,
+                                 const float* cpu_avg, const float* gpu_avg,
+                                 int n, int m, bool has_avg);
 
-void copy_to_device(float* d_in, const float* h_in, int n, int m);
-void copy_from_device(float* h_out, const float* d_out, int n, int m);
-void copy_averages_from_device(float* h_avg, const float* d_avg, int n);
-
-void validate_results(const float* cpu_matrix, const float* gpu_matrix,
-                      const float* cpu_avg, const float* gpu_avg,
-                      int n, int m, bool has_avg);
-
-void validate_block_size(int block_x, int block_y);
-
-#ifdef __cplusplus
-}
-#endif
-
-#endif // RADIATOR_GPU_H
+#endif  // RADIATOR_GPU_H
