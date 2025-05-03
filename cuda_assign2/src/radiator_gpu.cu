@@ -4,10 +4,36 @@
 #include <cstdio>
 #include <algorithm>
 
-// ---------------- Propagation Kernel ----------------
+// ---------------- Propagation Kernel with Shared Memory ----------------
 __global__ void propagate_kernel(const float* in, float* out, int n, int m) {
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
+    extern __shared__ float tile[];
+
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+    int col = blockIdx.x * blockDim.x + tx;
+    int row = blockIdx.y * blockDim.y + ty;
+
+    int local_row = ty;
+    int local_col = tx + 2;  // shared memory中偏移+2
+
+    // 每个线程拷贝本地数据到tile
+    if (row < n && col < m)
+        tile[local_row * (blockDim.x + 4) + local_col] = in[row * m + col];
+
+    // HALO 左边界
+    if (tx < 2 && row < n) {
+        int halo_col = (col - 2 + m) % m;
+        tile[local_row * (blockDim.x + 4) + tx] = in[row * m + halo_col];
+    }
+
+    // HALO 右边界
+    if (tx >= blockDim.x - 2 && row < n) {
+        int halo_col = (col + (tx - (blockDim.x - 2)) + 1) % m;
+        tile[local_row * (blockDim.x + 4) + local_col + (tx - (blockDim.x - 2)) + 1] =
+            in[row * m + halo_col];
+    }
+
+    __syncthreads();
 
     if (row >= n || col >= m) return;
 
@@ -16,16 +42,11 @@ __global__ void propagate_kernel(const float* in, float* out, int n, int m) {
         return;
     }
 
-    int jm2 = (col - 2 + m) % m;
-    int jm1 = (col - 1 + m) % m;
-    int jp1 = (col + 1) % m;
-    int jp2 = (col + 2) % m;
-
-    float sum = 1.60f * in[row * m + jm2]
-              + 1.55f * in[row * m + jm1]
-              + 1.00f * in[row * m + col]
-              + 0.60f * in[row * m + jp1]
-              + 0.25f * in[row * m + jp2];
+    float sum = 1.60f * tile[local_row * (blockDim.x + 4) + (local_col - 2)]
+              + 1.55f * tile[local_row * (blockDim.x + 4) + (local_col - 1)]
+              + 1.00f * tile[local_row * (blockDim.x + 4) + (local_col)]
+              + 0.60f * tile[local_row * (blockDim.x + 4) + (local_col + 1)]
+              + 0.25f * tile[local_row * (blockDim.x + 4) + (local_col + 2)];
 
     out[row * m + col] = sum / 5.0f;
 }
@@ -60,7 +81,9 @@ void gpu_propagate(float* d_in, float* d_out, int n, int m,
                    int block_x, int block_y, cudaStream_t stream) {
     dim3 threads(block_x, block_y);
     dim3 blocks((m + block_x - 1) / block_x, (n + block_y - 1) / block_y);
-    propagate_kernel<<<blocks, threads, 0, stream>>>(d_in, d_out, n, m);
+
+    size_t shared_mem = (block_x + 4) * block_y * sizeof(float);
+    propagate_kernel<<<blocks, threads, shared_mem, stream>>>(d_in, d_out, n, m);
     CHECK_CUDA(cudaGetLastError());
 }
 
@@ -88,7 +111,18 @@ void gpu_free_memory(float* d_in, float* d_out) {
     if (d_out) cudaFree(d_out);
 }
 
-extern "C" void validate_block_size(int block_x, int block_y) {
+extern "C"
+void gpu_alloc_averages(float** d_avg, int n) {
+    CHECK_CUDA(cudaMalloc(d_avg, n * sizeof(float)));
+}
+
+extern "C"
+void gpu_free_averages(float* d_avg) {
+    if (d_avg) cudaFree(d_avg);
+}
+
+extern "C"
+void validate_block_size(int block_x, int block_y) {
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, 0);
 
@@ -103,16 +137,6 @@ extern "C" void validate_block_size(int block_x, int block_y) {
                 block_x, block_y, prop.maxThreadsPerBlock);
         exit(EXIT_FAILURE);
     }
-}
-
-extern "C"
-void gpu_alloc_averages(float** d_avg, int n) {
-    CHECK_CUDA(cudaMalloc(d_avg, n * sizeof(float)));
-}
-
-extern "C"
-void gpu_free_averages(float* d_avg) {
-    if (d_avg) cudaFree(d_avg);
 }
 
 // ---------------- Memory Transfers ----------------
@@ -131,7 +155,7 @@ void copy_averages_from_device(float* h_avg, const float* d_avg, int n) {
     CHECK_CUDA(cudaMemcpy(h_avg, d_avg, n * sizeof(float), cudaMemcpyDeviceToHost));
 }
 
-// ---------------- Validation (CPU-only) ----------------
+// ---------------- Validation ----------------
 extern "C"
 void validate_results(const float* cpu_matrix, const float* gpu_matrix,
                       const float* cpu_avg, const float* gpu_avg,
@@ -154,6 +178,7 @@ void validate_results(const float* cpu_matrix, const float* gpu_matrix,
             if (diff > 1e-4f) avg_mismatch++;
             max_avg_diff = std::max(max_avg_diff, diff);
         }
-        printf("[Validation] Averages max diff = %.6e, mismatches > 1e-4 = %d\n", max_avg_diff, avg_mismatch);
+        printf("[Validation] Averages max diff = %.6e, mismatches > 1e-4 = %d\n",
+               max_avg_diff, avg_mismatch);
     }
 }
