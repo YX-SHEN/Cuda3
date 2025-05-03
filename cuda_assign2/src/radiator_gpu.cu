@@ -48,34 +48,29 @@ __global__ void propagate_kernel(const float* in, float* out, int n, int m) {
     out[row * m + col] = sum / 5.0f;
 }
 
-// ---------------- Optimized Row Average Kernel ----------------
+// ---------------- Warp Shuffle Row Average Kernel ----------------
 __global__ void average_kernel(const float* matrix, float* averages, int n, int m) {
-    extern __shared__ float sdata[];
     int row = blockIdx.x;
     int tid = threadIdx.x;
+    float sum = 0.0f;
 
-    float local_sum = 0.0f;
-    for (int i = tid; i < m; i += blockDim.x) {
-        local_sum += matrix[row * m + i];
-    }
-    sdata[tid] = local_sum;
+    for (int j = tid; j < m; j += blockDim.x)
+        sum += matrix[row * m + j];
+
+    // warp shuffle reduction
+    for (int offset = warpSize / 2; offset > 0; offset /= 2)
+        sum += __shfl_down_sync(0xffffffff, sum, offset);
+
+    if (tid % warpSize == 0) atomicAdd(&averages[row], sum);
+
     __syncthreads();
 
-    for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (tid < s) {
-            sdata[tid] += sdata[tid + s];
-        }
-        __syncthreads();
-    }
-
-    if (tid == 0) {
-        averages[row] = sdata[0] / m;
-    }
+    if (tid == 0)
+        averages[row] /= m;
 }
 
-// ==================== GPU API - C Linkage ====================
-extern "C" {
-
+// ---------------- GPU API ----------------
+extern "C"
 void gpu_propagate(float* d_in, float* d_out, int n, int m,
                    int block_x, int block_y, cudaStream_t stream) {
     dim3 threads(block_x, block_y);
@@ -85,46 +80,40 @@ void gpu_propagate(float* d_in, float* d_out, int n, int m,
     CHECK_CUDA(cudaGetLastError());
 }
 
+extern "C"
 void gpu_calculate_averages(float* d_matrix, float* d_avg, int n, int m,
                             int block_size, cudaStream_t stream) {
     dim3 blocks(n);
     dim3 threads(block_size);
-    size_t shared = block_size * sizeof(float);
-    average_kernel<<<blocks, threads, shared, stream>>>(d_matrix, d_avg, n, m);
+    average_kernel<<<blocks, threads, 0, stream>>>(d_matrix, d_avg, n, m);
     CHECK_CUDA(cudaGetLastError());
 }
 
+// ---------------- Memory Management ----------------
+extern "C"
 void gpu_alloc_memory(float** d_in, float** d_out, int n, int m) {
     size_t bytes = n * m * sizeof(float);
     CHECK_CUDA(cudaMalloc(d_in, bytes));
     CHECK_CUDA(cudaMalloc(d_out, bytes));
 }
 
+extern "C"
 void gpu_free_memory(float* d_in, float* d_out) {
     if (d_in) cudaFree(d_in);
     if (d_out) cudaFree(d_out);
 }
 
+extern "C"
 void gpu_alloc_averages(float** d_avg, int n) {
     CHECK_CUDA(cudaMalloc(d_avg, n * sizeof(float)));
 }
 
+extern "C"
 void gpu_free_averages(float* d_avg) {
     if (d_avg) cudaFree(d_avg);
 }
 
-void copy_to_device(float* d_in, const float* h_in, int n, int m) {
-    CHECK_CUDA(cudaMemcpy(d_in, h_in, n * m * sizeof(float), cudaMemcpyHostToDevice));
-}
-
-void copy_from_device(float* h_out, const float* d_out, int n, int m) {
-    CHECK_CUDA(cudaMemcpy(h_out, d_out, n * m * sizeof(float), cudaMemcpyDeviceToHost));
-}
-
-void copy_averages_from_device(float* h_avg, const float* d_avg, int n) {
-    CHECK_CUDA(cudaMemcpy(h_avg, d_avg, n * sizeof(float), cudaMemcpyDeviceToHost));
-}
-
+extern "C"
 void validate_block_size(int block_x, int block_y) {
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, 0);
@@ -142,6 +131,24 @@ void validate_block_size(int block_x, int block_y) {
     }
 }
 
+// ---------------- Memory Transfers ----------------
+extern "C"
+void copy_to_device(float* d_in, const float* h_in, int n, int m) {
+    CHECK_CUDA(cudaMemcpy(d_in, h_in, n * m * sizeof(float), cudaMemcpyHostToDevice));
+}
+
+extern "C"
+void copy_from_device(float* h_out, const float* d_out, int n, int m) {
+    CHECK_CUDA(cudaMemcpy(h_out, d_out, n * m * sizeof(float), cudaMemcpyDeviceToHost));
+}
+
+extern "C"
+void copy_averages_from_device(float* h_avg, const float* d_avg, int n) {
+    CHECK_CUDA(cudaMemcpy(h_avg, d_avg, n * sizeof(float), cudaMemcpyDeviceToHost));
+}
+
+// ---------------- Validation ----------------
+extern "C"
 void validate_results(const float* cpu_matrix, const float* gpu_matrix,
                       const float* cpu_avg, const float* gpu_avg,
                       int n, int m, bool has_avg) {
@@ -167,5 +174,3 @@ void validate_results(const float* cpu_matrix, const float* gpu_matrix,
                max_avg_diff, avg_mismatch);
     }
 }
-
-}  // end extern "C"

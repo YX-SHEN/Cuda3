@@ -1,41 +1,32 @@
-# Makefile for CUDA + C++ hybrid project
+# Compiler settings
+NVCC       = nvcc
+NVCCFLAGS  = -O2 -std=c++17 -arch=sm_75 -Xcompiler="-fopenmp"
+INCLUDES   = -I./src
 
-# 编译器设置
-NVCC        = nvcc
-CXX         = g++
-CXXFLAGS    = -O2 -std=c++17
-NVCCFLAGS   = -O2 -std=c++17 -Xcompiler="-fopenmp" -arch=sm_75
+# Source files
+SRC       = src/main.cpp src/radiator_cpu.cpp src/radiator_gpu.cu
+OBJ_DIR   = obj
+OBJS      = $(SRC:src/%.cpp=$(OBJ_DIR)/%.o)
+OBJS      := $(OBJS:src/%.cu=$(OBJ_DIR)/%.o)
 
-# 路径
-INCLUDE     = -I./src
-SRC_DIR     = src
-OBJ_DIR     = obj
-BIN         = radiator_exec
+TARGET    = radiator_exec
 
-# 源文件列表
-CPP_SRCS    = $(SRC_DIR)/main.cpp $(SRC_DIR)/radiator_cpu.cpp
-CU_SRCS     = $(SRC_DIR)/radiator_gpu.cu
-OBJS        = $(OBJ_DIR)/main.o $(OBJ_DIR)/radiator_cpu.o $(OBJ_DIR)/radiator_gpu.o
+# Default target
+all: $(TARGET)
 
-# 生成目标
-all: $(BIN)
+# Link target
+$(TARGET): $(OBJS)
+	$(NVCC) $(NVCCFLAGS) $(INCLUDES) -o $@ $^
 
-$(BIN): $(OBJS)
-	$(NVCC) $(NVCCFLAGS) $(INCLUDE) -o $@ $^
+# Compile all source files with nvcc
+$(OBJ_DIR)/%.o: src/%.cpp
+	@mkdir -p $(OBJ_DIR)
+	$(NVCC) $(NVCCFLAGS) $(INCLUDES) -c $< -o $@
 
-# 使用 nvcc 编译包含 cuda_runtime.h 的 .cpp 文件（如 main.cpp）
-$(OBJ_DIR)/main.o: $(SRC_DIR)/main.cpp
-	$(NVCC) $(NVCCFLAGS) $(INCLUDE) -c $< -o $@
+$(OBJ_DIR)/%.o: src/%.cu
+	@mkdir -p $(OBJ_DIR)
+	$(NVCC) $(NVCCFLAGS) $(INCLUDES) -c $< -o $@
 
-$(OBJ_DIR)/radiator_cpu.o: $(SRC_DIR)/radiator_cpu.cpp
-	$(CXX) $(CXXFLAGS) $(INCLUDE) -c $< -o $@
-
-$(OBJ_DIR)/radiator_gpu.o: $(SRC_DIR)/radiator_gpu.cu
-	$(NVCC) $(NVCCFLAGS) $(INCLUDE) -c $< -o $@
-
-# 清理
+# Clean target
 clean:
-	rm -rf $(OBJ_DIR)/*.o $(BIN)
-
-# 自动创建 obj 目录（可选）
-$(shell mkdir -p $(OBJ_DIR))
+	rm -rf $(OBJ_DIR) $(TARGET)
