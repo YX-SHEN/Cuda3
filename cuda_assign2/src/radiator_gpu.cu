@@ -4,36 +4,67 @@
 #include <cstdio>
 #include <algorithm>
 
-// ---------------- Texture-based Propagation Kernel ----------------
-__global__ void propagate_kernel(cudaTextureObject_t tex_in, float* out, int n, int m) {
-    int row = blockIdx.y * blockDim.y + threadIdx.y;
-    int col = blockIdx.x * blockDim.x + threadIdx.x;
+// ---------------- Propagation Kernel with Shared Memory and Loop Unrolling ----------------
+__global__ void propagate_kernel(const float* in, float* out, int n, int m) {
+    extern __shared__ float tile[];
+
+    int tx = threadIdx.x;
+    int ty = threadIdx.y;
+    int col = blockIdx.x * blockDim.x + tx;
+    int row = blockIdx.y * blockDim.y + ty;
+
+    int local_row = ty;
+    int local_col = tx + 2;
+
+    // Tile width = blockDim.x + 4
+    int shared_width = blockDim.x + 4;
+
+    if (row < n && col < m)
+        tile[local_row * shared_width + local_col] = in[row * m + col];
+
+    if (tx < 2 && row < n) {
+        int halo_col = (col - 2 + m) % m;
+        tile[local_row * shared_width + tx] = in[row * m + halo_col];
+    }
+
+    if (tx >= blockDim.x - 2 && row < n) {
+        int halo_col = (col + (tx - (blockDim.x - 2)) + 1) % m;
+        tile[local_row * shared_width + local_col + (tx - (blockDim.x - 2)) + 1] =
+            in[row * m + halo_col];
+    }
+
+    __syncthreads();
 
     if (row >= n || col >= m) return;
 
     if (col == 0) {
-        out[row * m + col] = tex2D<float>(tex_in, col + 0.5f, row + 0.5f);
+        out[row * m + col] = in[row * m + col];
         return;
     }
 
-    int jm2 = (col - 2 + m) % m;
-    int jm1 = (col - 1 + m) % m;
-    int jp1 = (col + 1) % m;
-    int jp2 = (col + 2) % m;
-
-    float sum = 1.60f * tex2D<float>(tex_in, jm2 + 0.5f, row + 0.5f)
-              + 1.55f * tex2D<float>(tex_in, jm1 + 0.5f, row + 0.5f)
-              + 1.00f * tex2D<float>(tex_in, col  + 0.5f, row + 0.5f)
-              + 0.60f * tex2D<float>(tex_in, jp1 + 0.5f, row + 0.5f)
-              + 0.25f * tex2D<float>(tex_in, jp2 + 0.5f, row + 0.5f);
+    float sum = 0.0f;
+    #pragma unroll
+    for (int offset = -2; offset <= 2; ++offset) {
+        float coeff;
+        switch (offset) {
+            case -2: coeff = 1.60f; break;
+            case -1: coeff = 1.55f; break;
+            case  0: coeff = 1.00f; break;
+            case  1: coeff = 0.60f; break;
+            case  2: coeff = 0.25f; break;
+        }
+        sum += coeff * tile[local_row * shared_width + (local_col + offset)];
+    }
 
     out[row * m + col] = sum / 5.0f;
 }
 
+// ---------------- Optimized Row Average Kernel ----------------
 __global__ void average_kernel(const float* matrix, float* averages, int n, int m) {
     extern __shared__ float sdata[];
     int row = blockIdx.x;
     int tid = threadIdx.x;
+
     float local_sum = 0.0f;
     for (int i = tid; i < m; i += blockDim.x) {
         local_sum += matrix[row * m + i];
@@ -42,7 +73,9 @@ __global__ void average_kernel(const float* matrix, float* averages, int n, int 
     __syncthreads();
 
     for (int s = blockDim.x / 2; s > 0; s >>= 1) {
-        if (tid < s) sdata[tid] += sdata[tid + s];
+        if (tid < s) {
+            sdata[tid] += sdata[tid + s];
+        }
         __syncthreads();
     }
 
@@ -51,37 +84,20 @@ __global__ void average_kernel(const float* matrix, float* averages, int n, int 
     }
 }
 
-extern "C" void gpu_propagate(float* d_in, float* d_out, int n, int m,
-                               int block_x, int block_y, cudaStream_t stream) {
-    // Use texture memory
-    cudaChannelFormatDesc desc = cudaCreateChannelDesc<float>();
-    cudaResourceDesc resDesc = {};
-    resDesc.resType = cudaResourceTypePitch2D;
-    resDesc.res.pitch2D.devPtr = d_in;
-    resDesc.res.pitch2D.desc = desc;
-    resDesc.res.pitch2D.width = m;
-    resDesc.res.pitch2D.height = n;
-    resDesc.res.pitch2D.pitchInBytes = m * sizeof(float);
-
-    cudaTextureDesc texDesc = {};
-    texDesc.addressMode[0] = cudaAddressModeWrap;
-    texDesc.addressMode[1] = cudaAddressModeClamp;
-    texDesc.filterMode = cudaFilterModePoint;
-    texDesc.readMode = cudaReadModeElementType;
-    texDesc.normalizedCoords = 0;
-
-    cudaTextureObject_t tex = 0;
-    CHECK_CUDA(cudaCreateTextureObject(&tex, &resDesc, &texDesc, nullptr));
-
+// ---------------- GPU API ----------------
+extern "C"
+void gpu_propagate(float* d_in, float* d_out, int n, int m,
+                   int block_x, int block_y, cudaStream_t stream) {
     dim3 threads(block_x, block_y);
     dim3 blocks((m + block_x - 1) / block_x, (n + block_y - 1) / block_y);
-    propagate_kernel<<<blocks, threads, 0, stream>>>(tex, d_out, n, m);
+    size_t shared_mem = (block_x + 4) * block_y * sizeof(float);
+    propagate_kernel<<<blocks, threads, shared_mem, stream>>>(d_in, d_out, n, m);
     CHECK_CUDA(cudaGetLastError());
-    CHECK_CUDA(cudaDestroyTextureObject(tex));
 }
 
-extern "C" void gpu_calculate_averages(float* d_matrix, float* d_avg, int n, int m,
-                                        int block_size, cudaStream_t stream) {
+extern "C"
+void gpu_calculate_averages(float* d_matrix, float* d_avg, int n, int m,
+                            int block_size, cudaStream_t stream) {
     dim3 blocks(n);
     dim3 threads(block_size);
     size_t shared = block_size * sizeof(float);
@@ -89,38 +105,32 @@ extern "C" void gpu_calculate_averages(float* d_matrix, float* d_avg, int n, int
     CHECK_CUDA(cudaGetLastError());
 }
 
-extern "C" void gpu_alloc_memory(float** d_in, float** d_out, int n, int m) {
+// ---------------- Memory Management ----------------
+extern "C"
+void gpu_alloc_memory(float** d_in, float** d_out, int n, int m) {
     size_t bytes = n * m * sizeof(float);
     CHECK_CUDA(cudaMalloc(d_in, bytes));
     CHECK_CUDA(cudaMalloc(d_out, bytes));
 }
 
-extern "C" void gpu_free_memory(float* d_in, float* d_out) {
+extern "C"
+void gpu_free_memory(float* d_in, float* d_out) {
     if (d_in) cudaFree(d_in);
     if (d_out) cudaFree(d_out);
 }
 
-extern "C" void gpu_alloc_averages(float** d_avg, int n) {
+extern "C"
+void gpu_alloc_averages(float** d_avg, int n) {
     CHECK_CUDA(cudaMalloc(d_avg, n * sizeof(float)));
 }
 
-extern "C" void gpu_free_averages(float* d_avg) {
+extern "C"
+void gpu_free_averages(float* d_avg) {
     if (d_avg) cudaFree(d_avg);
 }
 
-extern "C" void copy_to_device(float* d_in, const float* h_in, int n, int m) {
-    CHECK_CUDA(cudaMemcpy(d_in, h_in, n * m * sizeof(float), cudaMemcpyHostToDevice));
-}
-
-extern "C" void copy_from_device(float* h_out, const float* d_out, int n, int m) {
-    CHECK_CUDA(cudaMemcpy(h_out, d_out, n * m * sizeof(float), cudaMemcpyDeviceToHost));
-}
-
-extern "C" void copy_averages_from_device(float* h_avg, const float* d_avg, int n) {
-    CHECK_CUDA(cudaMemcpy(h_avg, d_avg, n * sizeof(float), cudaMemcpyDeviceToHost));
-}
-
-extern "C" void validate_block_size(int block_x, int block_y) {
+extern "C"
+void validate_block_size(int block_x, int block_y) {
     cudaDeviceProp prop;
     cudaGetDeviceProperties(&prop, 0);
 
@@ -137,9 +147,27 @@ extern "C" void validate_block_size(int block_x, int block_y) {
     }
 }
 
-extern "C" void validate_results(const float* cpu_matrix, const float* gpu_matrix,
-                                  const float* cpu_avg, const float* gpu_avg,
-                                  int n, int m, bool has_avg) {
+// ---------------- Memory Transfers ----------------
+extern "C"
+void copy_to_device(float* d_in, const float* h_in, int n, int m) {
+    CHECK_CUDA(cudaMemcpy(d_in, h_in, n * m * sizeof(float), cudaMemcpyHostToDevice));
+}
+
+extern "C"
+void copy_from_device(float* h_out, const float* d_out, int n, int m) {
+    CHECK_CUDA(cudaMemcpy(h_out, d_out, n * m * sizeof(float), cudaMemcpyDeviceToHost));
+}
+
+extern "C"
+void copy_averages_from_device(float* h_avg, const float* d_avg, int n) {
+    CHECK_CUDA(cudaMemcpy(h_avg, d_avg, n * sizeof(float), cudaMemcpyDeviceToHost));
+}
+
+// ---------------- Validation ----------------
+extern "C"
+void validate_results(const float* cpu_matrix, const float* gpu_matrix,
+                      const float* cpu_avg, const float* gpu_avg,
+                      int n, int m, bool has_avg) {
     float max_diff = 0.0f;
     int mismatch = 0;
 
