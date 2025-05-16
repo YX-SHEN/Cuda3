@@ -1,0 +1,23 @@
+========= COMPUTE-SANITIZER
+========= COMPUTE-SANITIZER
+========= COMPUTE-SANITIZER
+========= COMPUTE-SANITIZER
+========= COMPUTE-SANITIZER
+========= COMPUTE-SANITIZER
+========= COMPUTE-SANITIZER
+========= COMPUTE-SANITIZER
+========= Error: Target application terminated before first instrumented API call
+========= Error: couldn't find exit code.
+========= Error: Target application terminated before first instrumented API call
+========= Error: couldn't find exit code.
+========= Error: Target application terminated before first instrumented API call
+========= Error: Target application terminated before first instrumented API call
+========= Tracking kernels launched by child processes requires the --target-processes all option.
+========= Error: Target application terminated before first instrumented API call
+========= Tracking kernels launched by child processes requires the --target-processes all option.
+========= Error: Target application terminated before first instrumented API call
+========= Tracking kernels launched by child processes requires the --target-processes all option.
+========= Error: Target application terminated before first instrumented API call
+========= Tracking kernels launched by child processes requires the --target-processes all option.
+========= Error: Target application terminated before first instrumented API call
+========= Tracking kernels launched by child processes requires the --target-processes all option.

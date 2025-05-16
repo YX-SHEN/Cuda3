@@ -1,0 +1,6 @@
+CPU total time: 2.795179 s
+GPU total time (alloc+copy+all kernels+D2H+free): 0.809577 s
+  - Float kernel time (total):  0.108399 s
+  - Double kernel time (total): 0.250980 s
+Speed-up (CPU/GPU): 3.45x
+[Precision Check] GPU vs CPU comparison: PASS (threshold = 1e-5)

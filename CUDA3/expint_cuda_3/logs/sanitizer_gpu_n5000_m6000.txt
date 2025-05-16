@@ -1,0 +1,5 @@
+========= COMPUTE-SANITIZER
+GPU total time (alloc+copy+all kernels+D2H+free): 1.662889 s
+  - Float kernel time (total):  0.483349 s
+  - Double kernel time (total): 0.623148 s
+========= ERROR SUMMARY: 0 errors
